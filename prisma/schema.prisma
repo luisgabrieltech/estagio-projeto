@@ -1,0 +1,211 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Usuário do sistema CPA-UPE
+/// Representa todos os tipos de usuários: administradores, CSA e usuários comuns
+model User {
+  id              String           @id @default(cuid())
+  name            String
+  email           String           @unique
+  password        String           /// BCrypt hash - nunca armazenar senha em texto plano
+  role            Role             @default(USER)
+  functionalRoles FunctionalRole[] /// Múltiplos cargos funcionais (docente, discente, etc.)
+  resetToken      String?          /// Token temporário para reset de senha (hash recomendado)
+  resetTokenExp   DateTime?        /// Expiração do token de reset
+  extraData       Json?            @default("{}") /// Dados adicionais flexíveis (campus, curso, etc.)
+  active          Boolean          @default(true) /// Se false, usuário não pode fazer login
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  // Relações
+  responses    Response[]
+  createdForms Form[]        @relation("FormCreator")
+  certificates Certificate[]
+
+  @@index([email])
+  @@index([role])
+  @@index([active])
+}
+
+/// Formulário de avaliação institucional
+/// Contém questões e pode gerar certificados após preenchimento
+model Form {
+  id                   String         @id @default(cuid())
+  title                String
+  description          String
+  category             Category       /// Categoria do público-alvo
+  status               FormStatus     @default(DRAFT) /// Status interno de edição
+  externalStatus       ExternalStatus @default(HIDDEN) /// Status de visibilidade externa
+  deadline             DateTime?      /// Data limite para respostas
+  estimatedTime        String?        /// Tempo estimado para preenchimento (ex: "15 minutos")
+  generatesCertificate Boolean        @default(false) /// Se gera certificado ao completar
+  certificateHours     String?        /// Carga horária do certificado (ex: "4 horas")
+  visibleToRoles       String[]       @default([]) /// Roles que podem ver o formulário
+  visibleToUserIds     String[]       @default([]) /// IDs de usuários específicos
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+
+  // Relações
+  createdBy    User          @relation("FormCreator", fields: [createdById], references: [id])
+  createdById  String
+  questions    Question[]
+  responses    Response[]
+  certificates Certificate[]
+
+  @@index([createdById])
+  @@index([status])
+  @@index([externalStatus])
+  @@index([category])
+}
+
+/// Questão de um formulário
+/// Suporta diversos tipos: múltipla escolha, texto, escala, grid, etc.
+model Question {
+  id          String       @id @default(cuid())
+  customId    String?      /// ID personalizado para referência em relatórios
+  text        String       /// Texto da pergunta
+  type        QuestionType
+  required    Boolean      @default(false)
+  options     String[]     /// Opções para múltipla escolha/checkbox/dropdown
+  rows        String[]     /// Linhas para questões do tipo grid
+  columns     String[]     /// Colunas para questões do tipo grid
+  order       Int          /// Ordem de exibição no formulário
+  conditional Json?        /// Regras de exibição condicional
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  // Relações
+  form      Form       @relation(fields: [formId], references: [id], onDelete: Cascade)
+  formId    String
+  responses Response[]
+
+  @@index([formId])
+  @@index([type])
+}
+
+/// Resposta de um usuário a uma questão
+/// Cada combinação usuário+formulário+questão é única
+model Response {
+  id         String   @id @default(cuid())
+  value      String   /// Valor da resposta (texto, opção selecionada, etc.)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  // Relações
+  user       User     @relation(fields: [userId], references: [id])
+  userId     String
+  form       Form     @relation(fields: [formId], references: [id])
+  formId     String
+  question   Question @relation(fields: [questionId], references: [id])
+  questionId String
+
+  @@unique([userId, formId, questionId])
+  @@index([userId])
+  @@index([formId])
+  @@index([questionId])
+}
+
+/// Certificado gerado após completar um formulário
+/// Possui código de validação único para verificação de autenticidade
+model Certificate {
+  id             String   @id @default(cuid())
+  validationCode String   @unique /// Código único para validação pública
+  hash           String   /// Hash SHA-256 dos dados para integridade
+  metadata       Json?    @default("{}") /// Dados do certificado (nome, título, data, etc.)
+  issuedAt       DateTime @default(now()) /// Data de emissão
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // Relações
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId         String
+  form           Form            @relation(fields: [formId], references: [id], onDelete: Cascade)
+  formId         String
+  validationLogs ValidationLog[]
+
+  @@index([userId])
+  @@index([formId])
+  @@index([validationCode])
+}
+
+/// Log de validações de certificados
+/// Registra cada vez que um certificado é verificado
+model ValidationLog {
+  id            String   @id @default(cuid())
+  validatedAt   DateTime @default(now())
+  ipAddress     String?  /// IP do solicitante (considerar LGPD - dados pessoais)
+  userAgent     String?  /// Browser/cliente usado na validação
+  createdAt     DateTime @default(now())
+
+  // Relações
+  certificate   Certificate @relation(fields: [certificateId], references: [id], onDelete: Cascade)
+  certificateId String
+
+  @@index([certificateId])
+  @@index([validatedAt])
+}
+
+// ============================================================================
+// ENUMS
+// ============================================================================
+
+/// Papel do usuário no sistema
+enum Role {
+  ADMIN /// Administrador com acesso total
+  CSA   /// Comissão Setorial de Avaliação - gerencia formulários
+  USER  /// Usuário comum - responde formulários
+}
+
+/// Cargo funcional na instituição
+enum FunctionalRole {
+  DOCENTE                   /// Professor
+  DISCENTE                  /// Estudante
+  EGRESSO                   /// Ex-aluno
+  TECNICO_UNIDADES_ENSINO   /// Técnico administrativo em unidades de ensino
+  TECNICO_COMPLEXO_HOSPITALAR /// Técnico administrativo no complexo hospitalar
+}
+
+/// Status interno do formulário (para edição)
+enum FormStatus {
+  DRAFT  /// Rascunho - em edição
+  ACTIVE /// Ativo - publicado
+  CLOSED /// Fechado - não aceita mais respostas
+  FROZEN /// Congelado - arquivado
+}
+
+/// Categoria do público-alvo do formulário
+enum Category {
+  DOCENTES          /// Formulários para docentes
+  DISCENTES         /// Formulários para discentes
+  EGRESSOS          /// Formulários para egressos
+  TECNICOS_UNIDADES /// Formulários para técnicos de unidades
+  TECNICOS_COMPLEXO /// Formulários para técnicos do complexo hospitalar
+}
+
+/// Tipo de questão
+enum QuestionType {
+  MULTIPLE_CHOICE /// Múltipla escolha (uma opção)
+  CHECKBOX        /// Caixas de seleção (múltiplas opções)
+  TEXT            /// Texto livre
+  SCALE           /// Escala numérica (1-5, 1-10, etc.)
+  GRID            /// Grade/matriz de opções
+  DROPDOWN        /// Lista suspensa
+  SECTION         /// Separador de seção (não é pergunta)
+}
+
+/// Status externo do formulário (visibilidade pública)
+enum ExternalStatus {
+  HIDDEN    /// Oculto - não aparece para usuários
+  AVAILABLE /// Disponível - pode ser respondido
+  FROZEN    /// Congelado - visível mas não pode responder
+  SCHEDULED /// Agendado - será disponibilizado automaticamente
+}

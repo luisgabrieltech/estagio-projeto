@@ -1,0 +1,365 @@
+"use client"
+
+import { useState, useEffect } from "react"
+import Link from "next/link"
+import { useRouter } from "next/navigation"
+import { signIn } from "next-auth/react"
+import { motion } from "framer-motion"
+import { ArrowLeft, Eye, EyeOff, X } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Progress } from "@/components/ui/progress"
+import { useToast } from "@/components/ui/use-toast"
+import { routes } from "@/lib/config/routes"
+import { getAuthApiUrl } from "@/lib/utils"
+import { sanitizeTextInput } from "@/lib/utils/sanitize"
+import { isValidEmail } from "@/lib/utils/validation-utils"
+
+const FUNCTIONAL_ROLES = [
+  { id: "DOCENTE", label: "Docente" },
+  { id: "DISCENTE", label: "Discente" },
+  { id: "EGRESSO", label: "Egresso" },
+  { id: "TECNICO_UNIDADES_ENSINO", label: "Técnico Admin. - Unidades de Ensino" },
+  { id: "TECNICO_COMPLEXO_HOSPITALAR", label: "Técnico Admin. - Complexo Hospitalar" },
+]
+
+export default function RegisterPage() {
+  const [showPassword, setShowPassword] = useState(false)
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false)
+  const [password, setPassword] = useState("")
+  const [confirmPassword, setConfirmPassword] = useState("")
+  const [passwordStrength, setPasswordStrength] = useState(0)
+  const [passwordMatch, setPasswordMatch] = useState(true)
+  const [passwordFeedback, setPasswordFeedback] = useState<string[]>([])
+  const [isLoading, setIsLoading] = useState(false)
+  const [formError, setFormError] = useState<string | null>(null)
+  const [formData, setFormData] = useState({
+    firstName: "",
+    lastName: "",
+    email: "",
+    functionalRoles: [] as string[],
+  })
+  const router = useRouter()
+  const { toast } = useToast()
+
+  useEffect(() => {
+    if (!password) {
+      setPasswordStrength(0)
+      setPasswordFeedback([])
+      return
+    }
+
+    const feedback = []
+    let strength = 0
+
+    if (password.length >= 8) {
+      strength += 25
+    } else {
+      feedback.push("Pelo menos 8 caracteres")
+    }
+
+    if (/[A-Z]/.test(password)) {
+      strength += 25
+    } else {
+      feedback.push("Pelo menos uma letra maiúscula")
+    }
+
+    if (/[0-9]/.test(password)) {
+      strength += 25
+    } else {
+      feedback.push("Pelo menos um número")
+    }
+
+    if (/[^A-Za-z0-9]/.test(password)) {
+      strength += 25
+    } else {
+      feedback.push("Pelo menos um caractere especial")
+    }
+
+    setPasswordStrength(strength)
+    setPasswordFeedback(feedback)
+  }, [password])
+
+  useEffect(() => {
+    setPasswordMatch(password === confirmPassword)
+  }, [password, confirmPassword])
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setIsLoading(true)
+    setFormError(null)
+
+    // Sanitize inputs
+    const sanitizedFirstName = sanitizeTextInput(formData.firstName, 100)
+    const sanitizedLastName = sanitizeTextInput(formData.lastName, 100)
+    const sanitizedEmail = sanitizeTextInput(formData.email.toLowerCase(), 255)
+
+    // Validate email format using utility function
+    if (!isValidEmail(sanitizedEmail)) {
+      setFormError("Por favor, insira um endereço de email válido")
+      setIsLoading(false)
+      return
+    }
+
+    // Validate required fields
+    if (!sanitizedFirstName || !sanitizedLastName || !formData.functionalRoles.length) {
+      if (!formData.functionalRoles.length) {
+        setFormError("Por favor, selecione pelo menos um cargo funcional")
+      } else {
+        setFormError("Por favor, preencha todos os campos obrigatórios")
+      }
+      setIsLoading(false)
+      return
+    }
+
+    // Validate password
+    if (!password) {
+      setFormError("Por favor, insira uma senha")
+      setIsLoading(false)
+      return
+    }
+
+    if (!passwordMatch) {
+      setFormError("As senhas não coincidem")
+      setIsLoading(false)
+      return
+    }
+
+    if (passwordStrength < 100) {
+      setFormError("A senha não atende aos requisitos mínimos de segurança")
+      setIsLoading(false)
+      return
+    }
+
+    try {
+      const response = await fetch(getAuthApiUrl('register'), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: `${sanitizedFirstName} ${sanitizedLastName}`,
+          email: sanitizedEmail,
+          password,
+          userType: formData.functionalRoles.join(","),
+        }),
+      })
+
+      if (!response.ok) {
+        const json = await response.json()
+        // API may return { data: {...} } format
+        const data = json.data || json || {}
+        let errorMessage = data.message || "Erro ao criar conta"
+        if (data.message?.includes("email")) {
+          errorMessage = "Este email já está cadastrado"
+        } else if (data.message?.includes("password")) {
+          errorMessage = "A senha não atende aos requisitos de segurança"
+        }
+        setFormError(errorMessage)
+        setIsLoading(false)
+        return
+      }
+
+      // Fazer login automático após o registro
+      const result = await signIn("credentials", {
+        email: sanitizedEmail,
+        password,
+        redirect: false,
+      })
+
+      if (result?.error) {
+        setFormError("Sua conta foi criada, mas houve um erro ao fazer login. Por favor, faça login manualmente.")
+        router.push(routes.auth.login)
+        return
+      }
+
+      router.push(routes.dashboard.home)
+      router.refresh()
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : "Ocorreu um erro ao criar sua conta")
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  return (
+    <div className="container flex h-screen w-screen flex-col items-center justify-center">
+      <Link
+        href={routes.home}
+        className="absolute left-4 top-4 md:left-8 md:top-8 flex items-center text-sm font-medium text-muted-foreground"
+      >
+        <ArrowLeft className="mr-2 h-4 w-4" />
+        Voltar para o início
+      </Link>
+
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5 }}
+        className="mx-auto flex w-full flex-col justify-center space-y-6 sm:w-[350px]"
+      >
+        <div className="flex flex-col space-y-2 text-center">
+          <h1 className="text-2xl font-semibold tracking-tight">Crie sua conta</h1>
+          <p className="text-sm text-muted-foreground">Preencha os dados abaixo para se cadastrar</p>
+        </div>
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-xl">Cadastro</CardTitle>
+            <CardDescription>Crie sua conta para participar das avaliações</CardDescription>
+          </CardHeader>
+          <form onSubmit={handleSubmit}>
+            <CardContent className="grid gap-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="grid gap-2">
+                  <Label htmlFor="first-name">Nome</Label>
+                  <Input
+                    id="first-name"
+                    placeholder="João"
+                    value={formData.firstName}
+                    onChange={(e) => setFormData({ ...formData, firstName: e.target.value })}
+                    required
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="last-name">Sobrenome</Label>
+                  <Input
+                    id="last-name"
+                    placeholder="Silva"
+                    value={formData.lastName}
+                    onChange={(e) => setFormData({ ...formData, lastName: e.target.value })}
+                    required
+                  />
+                </div>
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="email">E-mail institucional</Label>
+                <Input
+                  id="email"
+                  type="email"
+                  placeholder="nome@exemplo.com"
+                  autoComplete="email"
+                  value={formData.email}
+                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                  required
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label>Cargos funcionais *</Label>
+                <div className="space-y-2">
+                  {FUNCTIONAL_ROLES.map((role) => (
+                    <label key={role.id} className="flex items-center space-x-3 p-2 rounded-md hover:bg-gray-50 cursor-pointer">
+                      <Checkbox
+                        id={role.id}
+                        checked={formData.functionalRoles.includes(role.id)}
+                        onCheckedChange={(checked) => {
+                          if (checked) {
+                            setFormData({ ...formData, functionalRoles: [...formData.functionalRoles, role.id] })
+                          } else {
+                            setFormData({ ...formData, functionalRoles: formData.functionalRoles.filter((r) => r !== role.id) })
+                          }
+                        }}
+                      />
+                      <span className="text-sm">{role.label}</span>
+                    </label>
+                  ))}
+                </div>
+                {formData.functionalRoles.length > 0 && (
+                  <p className="text-xs text-green-600 font-medium">
+                    ✓ {formData.functionalRoles.length} cargo{formData.functionalRoles.length > 1 ? 's' : ''} selecionado{formData.functionalRoles.length > 1 ? 's' : ''}
+                  </p>
+                )}
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="password">Senha</Label>
+                <div className="relative">
+                  <Input
+                    id="password"
+                    type={showPassword ? "text" : "password"}
+                    placeholder="••••••••"
+                    autoComplete="new-password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="absolute right-0 top-0 h-full px-3 py-2 text-muted-foreground"
+                    onClick={() => setShowPassword(!showPassword)}
+                  >
+                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    <span className="sr-only">{showPassword ? "Esconder senha" : "Mostrar senha"}</span>
+                  </Button>
+                </div>
+                {password && (
+                  <div className="space-y-2">
+                    <Progress value={passwordStrength} className="h-2" />
+                    <div className="grid grid-cols-2 gap-2">
+                      {passwordFeedback.map((feedback, index) => (
+                        <div key={index} className="flex items-center gap-2 text-xs">
+                          <X className="h-3 w-3 text-red-500" />
+                          <span className="text-muted-foreground">{feedback}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="confirm-password">Confirmar Senha</Label>
+                <div className="relative">
+                  <Input
+                    id="confirm-password"
+                    type={showConfirmPassword ? "text" : "password"}
+                    placeholder="••••••••"
+                    autoComplete="new-password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    required
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="absolute right-0 top-0 h-full px-3 py-2 text-muted-foreground"
+                    onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                  >
+                    {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    <span className="sr-only">{showConfirmPassword ? "Esconder senha" : "Mostrar senha"}</span>
+                  </Button>
+                </div>
+                {confirmPassword && !passwordMatch && (
+                  <p className="text-xs text-red-500">As senhas não coincidem</p>
+                )}
+              </div>
+              {formError && (
+                <div className="text-red-600 text-sm text-center mb-2">
+                  {formError}
+                </div>
+              )}
+            </CardContent>
+            <CardFooter className="flex flex-col gap-4">
+              <Button
+                type="submit"
+                className="w-full bg-upe-blue hover:bg-upe-darkblue"
+                disabled={isLoading}
+              >
+                {isLoading ? "Criando conta..." : "Cadastrar"}
+              </Button>
+              <p className="text-center text-sm text-muted-foreground">
+                Já tem uma conta?{" "}
+                <Link href={routes.auth.login} className="text-upe-blue hover:underline">
+                  Entrar
+                </Link>
+              </p>
+            </CardFooter>
+          </form>
+        </Card>
+      </motion.div>
+    </div>
+  )
+}
